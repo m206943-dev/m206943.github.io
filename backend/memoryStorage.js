@@ -1,1 +1,2 @@
-export const memoryStorage = {}
+const memoryStorage = {}
+export default memoryStorage

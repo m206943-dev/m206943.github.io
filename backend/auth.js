@@ -1,71 +1,75 @@
 import express from 'express'
-import crypto from 'crypto'
 import axios from 'axios'
-import { memoryStorage } from './memoryStorage.js'
-
+import crypto from 'crypto'
+import memoryStorage from './memoryStorage.js'
+import { URLSearchParams } from 'url'
 
 const router = express.Router()
 
-
-function generateCodeVerifier() {
-return crypto.randomBytes(32).toString('hex')
-}
-
-
 function base64URLEncode(str) {
-return str.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+  return str.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
-
 
 function sha256(buffer) {
-return crypto.createHash('sha256').update(buffer).digest()
+  return crypto.createHash('sha256').update(buffer).digest()
 }
-
 
 router.get('/start', (req, res) => {
-const state = crypto.randomBytes(16).toString('hex')
-const code_verifier = generateCodeVerifier()
-const code_challenge = base64URLEncode(sha256(code_verifier))
+  const state = crypto.randomUUID()
+  const codeVerifier = base64URLEncode(crypto.randomBytes(32))
+  const codeChallenge = base64URLEncode(sha256(codeVerifier))
 
+  memoryStorage[state] = { codeVerifier }
 
-memoryStorage[state] = { code_verifier, createdAt: Date.now() }
+  const authorizeUrl = `${process.env.ENEDIS_AUTHORIZE_URL}?` +
+    new URLSearchParams({
+      client_id: process.env.ENEDIS_CLIENT_ID,
+      response_type: 'code',
+      redirect_uri: process.env.ENEDIS_REDIRECT_URI,
+      scope: process.env.ENEDIS_SCOPE,
+      state,
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
+    })
 
-
-const authUrl = `${process.env.ENEDIS_AUTHORIZE_URL}?response_type=code&client_id=${process.env.ENEDIS_CLIENT_ID}&redirect_uri=${encodeURIComponent(process.env.ENEDIS_REDIRECT_URI)}&scope=${encodeURIComponent(process.env.ENEDIS_SCOPE)}&state=${state}&code_challenge=${code_challenge}&code_challenge_method=S256`
-
-
-res.redirect(authUrl)
+  res.redirect(authorizeUrl)
 })
-
 
 router.get('/callback', async (req, res) => {
-const { code, state } = req.query
-const stored = memoryStorage[state]
+  const { code, state } = req.query
 
+  if (!memoryStorage[state]) {
+    return res.status(400).send('Invalid state')
+  }
 
-if (!stored) return res.status(400).send('Invalid or expired state')
-try {
-const response = await axios.post(process.env.ENEDIS_TOKEN_URL, null, {
-params: {
-grant_type: 'authorization_code',
-code,
-redirect_uri: process.env.ENEDIS_REDIRECT_URI,
-client_id: process.env.ENEDIS_CLIENT_ID,
-code_verifier: stored.code_verifier,
-client_secret: process.env.ENEDIS_CLIENT_SECRET
-},
+  const { codeVerifier } = memoryStorage[state]
+  delete memoryStorage[state]
+
+  try {
+    const response = await axios.post(process.env.ENEDIS_TOKEN_URL, new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: process.env.ENEDIS_REDIRECT_URI,
+      client_id: process.env.ENEDIS_CLIENT_ID,
+      code_verifier: codeVerifier,
+      client_secret: process.env.ENEDIS_CLIENT_SECRET,
+    }), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    })
+
+    const { access_token, refresh_token, expires_in } = response.data
+
+    memoryStorage.tokens = {
+      access_token,
+      refresh_token,
+      expires_at: Date.now() + expires_in * 1000,
+    }
+
+    res.redirect(`${process.env.FRONTEND_URL}/dashboard?connected=1`)
+  } catch (err) {
+    console.error(err)
+    res.status(500).send('Token exchange failed')
+  }
 })
-
-
-global.tokens = response.data
-res.redirect(`${process.env.FRONTEND_URL}/dashboard?connected=1`)
-} catch (err) {
-console.error(err.response?.data || err.message)
-res.status(500).send('Token exchange failed')
-}
-})
-
 
 export default router
-
-delete memoryStorage[state]

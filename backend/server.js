@@ -1,23 +1,24 @@
-import express from 'express'
-import dotenv from 'dotenv'
-import cors from 'cors'
-import authRoutes from './auth.js'
+// backend/server.js
+import express from 'express';
+import cors from 'cors';
+import { getDailyConsumption } from './enedis.js';
 
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-dotenv.config()
+app.post('/api/consumption', async (req, res) => {
+  const { token, startDate, endDate } = req.body;
 
+  try {
+    const data = await getDailyConsumption(token, startDate, endDate);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao buscar dados' });
+  }
+});
 
-const app = express()
-app.use(cors({ origin: process.env.FRONTEND_URL }))
-app.use(express.json())
-app.use('/auth/enedis', authRoutes)
-
-
-app.get('/api/auth/status', (req, res) => {
-const tokens = global.tokens || null
-res.json({ connected: !!tokens?.access_token })
-})
-
-
-const PORT = process.env.PORT || 5000
-app.listen(PORT, () => console.log(`Backend on http://localhost:${PORT}`))
+const PORT = 3000;
+app.listen(PORT, () => {
+  console.log(`Servidor rodando na porta ${PORT}`);
+});
